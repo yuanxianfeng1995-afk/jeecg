@@ -17,7 +17,6 @@ console.log('ant-design-vue version:', version)
 import Viser from 'viser-vue'
 import 'ant-design-vue/dist/antd.less';  // or 'ant-design-vue/dist/antd.less'
 
-import '@/permission' // permission control
 import '@/utils/filter' // base filter
 import Print from 'vue-print-nb-jeecg'
 import preview from 'vue-photo-preview'
@@ -46,6 +45,7 @@ import '@/assets/less/JAreaLinkage.less'
 import VueAreaLinkage from 'vue-area-linkage'
 import '@/components/jeecg/JVxeTable/install'
 import '@/components/JVxeCells/install'
+import VueSimpleUploader from 'vue-simple-uploader'
 //表单验证
 import { rules } from '@/utils/rules'
 Vue.prototype.rules = rules
@@ -61,6 +61,7 @@ Vue.use(preview)
 Vue.use(vueBus);
 Vue.use(JeecgComponents);
 Vue.use(VueAreaLinkage);
+Vue.use(VueSimpleUploader);
 
 SSO.init(() => {
   main()

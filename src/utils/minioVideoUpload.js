@@ -1,4 +1,8 @@
-import { Client } from 'minio'
+import { Buffer } from "buffer";
+import { Readable as NodeReadable } from "readable-stream";
+import { Minio } from "minio-js";
+
+const Client = Minio.Client
 
 export function createMinioClient(config) {
   if (!config || !config.endPoint || !config.accessKey || !config.secretKey) {
@@ -7,61 +11,94 @@ export function createMinioClient(config) {
   return new Client({
     endPoint: config.endPoint,
     port: config.port || 9000,
-    useSSL: !!config.useSSL,
+    useSSL: false,
     accessKey: config.accessKey,
     secretKey: config.secretKey,
     sessionToken: config.sessionToken,
   })
 }
 
-function toTypedArray(data) {
-  if (data instanceof ArrayBuffer) {
-    return new Uint8Array(data)
-  }
-  if (ArrayBuffer.isView(data)) {
-    return data
-  }
-  return new Uint8Array(data)
+async function fileToNodeStream(file, chunkSize = 3 * 1024 * 1024) {
+  const browserStream = file.stream();
+  const reader = browserStream.getReader();
+
+  return new NodeReadable({
+    async read(size) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          this.push(null);
+          return;
+        }
+
+        // 将浏览器流的数据块拆分成更小的块
+        for (let i = 0; i < value.length; i += chunkSize) {
+          const smallChunk = value.subarray(i, i + chunkSize);
+          if (!this.push(Buffer.from(smallChunk))) {
+            // 缓冲区已满，暂停直到下次调用read()
+            return;
+          }
+        }
+      } catch (err) {
+        this.destroy(err);
+      }
+    },
+  });
 }
 
-export async function uploadVideoChunks({ client, bucketName, objectName, file, chunkSize = 5 * 1024 * 1024, progressCb = () => {} }) {
+export async function uploadVideoChunks({ client, bucketName, objectName, file, chunkSize = 5 * 1024 * 1024, progressCb = () => { } }) {
   if (!client || !bucketName || !objectName || !file) {
     throw new Error('uploadVideoChunks 需要 client, bucketName, objectName 和 file 参数')
   }
 
-  const metaData = {
-    'Content-Type': file.type || 'application/octet-stream',
-  }
 
-  const uploadId = await client.initiateNewMultipartUpload(bucketName, objectName, metaData)
-  const parts = []
-  let uploaded = 0
+  // // 预签名版直传方案
+  // const url = await client.presignedPutObject(
+  //   bucketName,
+  //   objectName,
+  //   3600,
+  // );
+  // fetch(url, {
+  //   mode: "cors", // 解决跨域
+  //   headers: {
+  //     // Accept:
+  //     "Content-Type": "multipart/form-data",
+  //     "Content-Disposition": "form-data",
+  //   },
+  //   method: "PUT",
+  //   body: file, //data就是文件对象
+  // }).then((response) => {
+  //   console.log(response, "response");
+  //   if (response.ok) {
+  //     // 处理成功的情况
+  //     console.log(`${file.name} 上传成功`, response);
+  //   } else {
+  //     // 处理失败的情况
+  //     console.log(`${file.name} "上传失败，请重新上传！"`, response);
+  //   }
+  // });
+  // return
 
+  const nodeStream = await fileToNodeStream(file)
+  console.log('开始上传分片...', nodeStream)
   try {
-    for (let partNumber = 1, start = 0; start < file.size; partNumber += 1, start += chunkSize) {
-      const end = Math.min(start + chunkSize, file.size)
-      const blob = file.slice(start, end)
-      const arrayBuffer = await blob.arrayBuffer()
-      const partData = toTypedArray(arrayBuffer)
-      const etag = await client.uploadPart(bucketName, objectName, uploadId, partNumber, partData, partData.byteLength || partData.length)
-      parts.push({ PartNumber: partNumber, ETag: etag })
-      uploaded += end - start
-      progressCb(Math.min(100, (uploaded / file.size) * 100))
-    }
-
-    const result = await client.completeMultipartUpload(bucketName, objectName, uploadId, parts)
-    return {
+     const progressHandler = (progress) => {
+    console.log(`Uploading ${file.name}... ${progress}%`);
+  };
+    const metaData = {
+      "Content-Type": file.type,
+      mode: "cors",
+    };
+   
+    // 发送上传文件的请求
+    let res = await client.putObject(
+      bucketName, // 桶名称
       objectName,
-      etag: result && (result.etag || result.ETag || ''),
-      url: objectName,
-      result,
-    }
+      nodeStream,
+      metaData, // 元数据
+      {progress: progressHandler}
+    );
   } catch (error) {
-    try {
-      await client.abortMultipartUpload(bucketName, objectName, uploadId)
-    } catch (abortError) {
-      // ignore abort error
-    }
-    throw error
+    console.error("上传失败:", error);
   }
 }
