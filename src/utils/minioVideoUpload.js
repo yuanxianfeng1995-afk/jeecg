@@ -1,5 +1,5 @@
 import { Buffer } from "buffer";
-import { Readable as NodeReadable } from "readable-stream";
+import { Readable as NodeReadable, PassThrough } from "readable-stream";
 import { Minio } from "minio-js";
 
 const Client = Minio.Client
@@ -46,6 +46,32 @@ async function fileToNodeStream(file, chunkSize = 3 * 1024 * 1024) {
   });
 }
 
+function createProgressStream(sourceStream, totalSize, progressCb = () => {}) {
+  if (!progressCb || typeof progressCb !== 'function') {
+    return sourceStream;
+  }
+
+  let uploaded = 0;
+  const progressStream = new PassThrough();
+
+  progressCb(0);
+
+  progressStream.on('data', (chunk) => {
+    uploaded += chunk.length;
+    if (totalSize > 0) {
+      const percent = Math.min(100, Math.round((uploaded / totalSize) * 100));
+      progressCb(percent);
+    }
+  });
+
+  progressStream.on('end', () => {
+    progressCb(100);
+  });
+
+  sourceStream.pipe(progressStream);
+  return progressStream;
+}
+
 export async function uploadVideoChunks({ client, bucketName, objectName, file, chunkSize = 5 * 1024 * 1024, progressCb = () => { } }) {
   if (!client || !bucketName || !objectName || !file) {
     throw new Error('uploadVideoChunks 需要 client, bucketName, objectName 和 file 参数')
@@ -80,25 +106,25 @@ export async function uploadVideoChunks({ client, bucketName, objectName, file, 
   // return
 
   const nodeStream = await fileToNodeStream(file)
-  console.log('开始上传分片...', nodeStream)
+  const uploadStream = createProgressStream(nodeStream, file.size, progressCb)
+  console.log('开始上传分片...', uploadStream)
   try {
-     const progressHandler = (progress) => {
-    console.log(`Uploading ${file.name}... ${progress}%`);
-  };
     const metaData = {
       "Content-Type": file.type,
       mode: "cors",
     };
-   
+
     // 发送上传文件的请求
     let res = await client.putObject(
       bucketName, // 桶名称
       objectName,
-      nodeStream,
+      uploadStream,
       metaData, // 元数据
-      {progress: progressHandler}
     );
+    console.log(`${file.name} 上传成功`, res);
+    return res;
   } catch (error) {
     console.error("上传失败:", error);
+    throw error;
   }
 }
